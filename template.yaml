@@ -1,0 +1,668 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Taylor Swift World Tour Ticketing System
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment (dev, test, prod)
+  OwnerAlias:
+    Type: String
+    Description: Enter your alias for resource tagging
+  EmailAddress:
+    Type: String
+    Default: manybanana@amazon.com
+    Description: Enter your email adderess to get a ticket purchase confirmation messsage.
+  SpringClean:
+    Type: String
+    Default: 'no'
+    Description: Type 'Yes' to make provisioned resources to be auto delated by Spring Cleaner later. Otherwise, it won't be deleted.
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 15
+    MemorySize: 128
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+    Tags:
+      Project: TaylorSwiftTicketingSystem
+      Environment: !Ref Environment
+      Owner: !Ref OwnerAlias
+      auto-delete: !Ref SpringClean
+
+Resources:
+
+  ### DynamoDB Tables ###
+
+  SeatInventoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-SeatInventory'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: concertId
+          AttributeType: S
+        - AttributeName: seatId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: concertId
+          KeyType: HASH
+        - AttributeName: seatId
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-Orders'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+
+  FanClubMembersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Environment}-FanClubMembers'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: fanClubId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: fanClubId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  ### KMS Key ###
+
+  TicketingSystemKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS Key for encrypting SNS topics
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+          - Sid: Allow administration of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - kms:Create*
+              - kms:Describe*
+              - kms:Enable*
+              - kms:List*
+              - kms:Put*
+              - kms:Update*
+              - kms:Revoke*
+              - kms:Disable*
+              - kms:Get*
+              - kms:Delete*
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:ScheduleKeyDeletion
+              - kms:CancelKeyDeletion
+            Resource: '*'
+          - Sid: Allow ticket TicketPurchaseHandler function
+            Effect: Allow
+            Principal:  
+              AWS: !GetAtt TicketPurchaseHandlerRole.Arn
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDatakey*
+            Resource: '*'
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  ### SNS Topics ###
+
+  TourTicketingTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${Environment}-TourTicketingTopic'
+      KmsMasterKeyId: !Ref TicketingSystemKey
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  FanNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${Environment}-FanNotificationTopic'
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  ### SQS Queues ###
+
+  SeatInventoryQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-SeatInventoryQueue'
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  PaymentProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-PaymentProcessingQueue'
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-NotificationQueue'
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  FanClubAwardsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Environment}-FanClubAwardsQueue'
+      Tags:
+        - Key: Project
+          Value: TaylorSwiftTicketingSystem
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref OwnerAlias
+        - Key: auto-delete
+          Value: !Ref SpringClean
+          
+  ### SNS Subscriptions ###
+
+  FanEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref FanNotificationTopic
+      Protocol: email
+      Endpoint: !Ref EmailAddress
+
+  SeatInventorySubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref TourTicketingTopic
+      Protocol: sqs
+      Endpoint: !GetAtt SeatInventoryQueue.Arn
+
+  PaymentProcessingSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref TourTicketingTopic
+      Protocol: sqs
+      Endpoint: !GetAtt PaymentProcessingQueue.Arn
+
+  NotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref TourTicketingTopic
+      Protocol: sqs
+      Endpoint: !GetAtt NotificationQueue.Arn
+
+  FanClubAwardsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref TourTicketingTopic
+      Protocol: sqs
+      Endpoint: !GetAtt FanClubAwardsQueue.Arn
+      FilterPolicy:
+        hasFanClubMember:
+          - 'true'
+
+
+ ### SQS Queue Policies ###
+
+  SeatInventoryQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref SeatInventoryQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 'sqs:SendMessage'
+            Resource: !GetAtt SeatInventoryQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TourTicketingTopic
+
+  PaymentProcessingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref PaymentProcessingQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 'sqs:SendMessage'
+            Resource: !GetAtt PaymentProcessingQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TourTicketingTopic
+
+  NotificationQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref NotificationQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 'sqs:SendMessage'
+            Resource: !GetAtt NotificationQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TourTicketingTopic
+
+  FanClubAwardsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref FanClubAwardsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 'sqs:SendMessage'
+            Resource: !GetAtt FanClubAwardsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TourTicketingTopic
+
+
+ ### IAM Roles ###
+    
+  TicketPurchaseHandlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PublishToSNSTopic
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${Environment}-TourTicketingTopic"
+
+  SeatInventoryUpdaterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AccessDynamoDB
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt SeatInventoryTable.Arn
+        - PolicyName: SQSPoller
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt SeatInventoryQueue.Arn
+
+  PaymentProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AccessDynamoDB
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt OrdersTable.Arn
+        - PolicyName: SQSPoller
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt PaymentProcessingQueue.Arn
+
+  FanNotifierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PublishToFanNotificationTopic
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${Environment}-FanNotificationTopic"
+        - PolicyName: SQSPoller
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt NotificationQueue.Arn
+
+  FanClubAwardProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AccessDynamoDB
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt FanClubMembersTable.Arn
+        - PolicyName: SQSPoller
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt FanClubAwardsQueue.Arn
+    
+  PrintNotificationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ### Lambda Functions ###
+
+  TicketPurchaseHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-TicketPurchaseHandler'
+      Handler: app.lambda_handler
+      Role: !GetAtt TicketPurchaseHandlerRole.Arn
+      CodeUri: ticket_purchase_handler/
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref TourTicketingTopic
+
+  SeatInventoryUpdaterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-SeatInventoryUpdater'
+      Handler: app.lambda_handler
+      Role: !GetAtt SeatInventoryUpdaterRole.Arn
+      CodeUri: seat_inventory_updater/
+      Events:
+        SeatInventoryQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SeatInventoryQueue.Arn
+            BatchSize: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref SeatInventoryTable
+
+  PaymentProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-PaymentProcessor'
+      Handler: app.lambda_handler
+      Role: !GetAtt PaymentProcessorRole.Arn
+      CodeUri: payment_processor/
+      Events:
+        PaymentProcessingQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PaymentProcessingQueue.Arn
+            BatchSize: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref OrdersTable
+
+  FanNotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-FanNotifier'
+      Handler: app.lambda_handler
+      Role: !GetAtt FanNotifierRole.Arn
+      CodeUri: fan_notifier/
+      Events:
+        NotificationQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NotificationQueue.Arn
+            BatchSize: 10
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref FanNotificationTopic
+
+  FanClubAwardProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-FanClubAwardProcessor'
+      Handler: app.lambda_handler
+      Role: !GetAtt FanClubAwardProcessorRole.Arn
+      CodeUri: fan_club_award_processor/
+      Events:
+        FanClubAwardsQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt FanClubAwardsQueue.Arn
+            BatchSize: 10
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref FanClubMembersTable
+
+  PrintNotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${Environment}-PrintNotification'
+      Handler: app.lambda_handler
+      Role: !GetAtt PrintNotificationRole.Arn
+      CodeUri: print_notification/
+      Events:
+        TourTicketingTopicEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref TourTicketingTopic
+
+  ### Lambda Permissions ###
+  PrintNotificationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub '${Environment}-PrintNotification'
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref TourTicketingTopic
+
+
+
+Outputs:
+  TicketPurchaseHandlerFunction:
+    Description: Ticket Purchase Handler Lambda Function ARN
+    Value: !GetAtt TicketPurchaseHandlerFunction.Arn
+  TourTicketingTopic:
+    Description: SNS Topic ARN
+    Value: !Ref TourTicketingTopic
+  FanNotificationTopic:
+    Description: Fan Notification SNS Topic ARN
+    Value: !Ref FanNotificationTopic
+  SeatInventoryQueue:
+    Description: Seat Inventory SQS Queue URL
+    Value: !Ref SeatInventoryQueue
+  PaymentProcessingQueue:
+    Description: Payment Processing SQS Queue URL
+    Value: !Ref PaymentProcessingQueue
+  NotificationQueue:
+    Description: Notification SQS Queue URL
+    Value: !Ref NotificationQueue
+  FanClubAwardsQueue:
+    Description: Fan Club Awards SQS Queue URL
+    Value: !Ref FanClubAwardsQueue
+
+
+
